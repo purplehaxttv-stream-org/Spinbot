@@ -36,12 +36,18 @@
 - [x] Neon
 - [x] Custom theme builder (hex colors, saved to config)
 
+## Bot Platforms
+- [x] Firebot support (REST API at localhost:7472)
+- [x] Streamer.bot support (WebSocket API at ws://127.0.0.1:8080/)
+- [x] Bot platform selection in config flow
+
 ## Features
-- [x] Currency-based entry tracking
-- [x] Metadata-based entry tracking
-- [x] Bonus currency/metadata for first check-in
+- [x] Currency-based entry tracking (Firebot)
+- [x] Metadata-based entry tracking (Firebot)
+- [x] User global variable tracking (Streamer.bot)
+- [x] Bonus currency/metadata/variable for first check-in
 - [x] Persistent config (~/.spinbot/config.json)
-- [x] Announce winner in Twitch chat via Firebot POST /effects (firebot:chat)
+- [x] Announce winner in Twitch chat via Firebot or Streamer.bot
 - [x] Selectable spinner types (8 total)
 - [x] Selectable themes (5 presets + custom)
 - [ ] Standalone .exe packaging

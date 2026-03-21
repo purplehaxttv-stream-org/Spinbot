@@ -1,19 +1,23 @@
 # Spinbot
 
-A streamer giveaway tool with animated spinners, powered by [Firebot](https://firebot.app).
+A streamer giveaway tool with animated spinners. Supports both [Firebot](https://firebot.app) and [Streamer.bot](https://streamer.bot).
 
-Spinbot pulls viewer check-in data from Firebot and runs one of eight animated spinner types to pick a winner. The winner is automatically announced in your Twitch chat.
+Spinbot pulls viewer check-in data from your bot platform and runs one of eight animated spinner types to pick a winner. The winner is automatically announced in your Twitch chat.
 
 ## Getting Started
 
 ### Requirements
 
+One of the following bot platforms:
+
 - **[Firebot](https://firebot.app)** installed and running (default: `localhost:7472`)
-- A Firebot currency or metadata key that tracks viewer check-ins
+- **[Streamer.bot](https://streamer.bot)** installed and running with the WebSocket server enabled (default: `ws://127.0.0.1:8080/`)
+
+Plus a currency, metadata key, or user global variable that tracks viewer check-ins.
 
 ### Download
 
-Grab the latest `Spinbot.exe` from the [Releases](https://github.com/purplehaxttv-stream-org/Spinbot/releases) page. No installation required -- just download, run, and connect to Firebot.
+Grab the latest `Spinbot.exe` from the [Releases](https://github.com/purplehaxttv-stream-org/Spinbot/releases) page. No installation required -- just download, run, and connect to your bot.
 
 ### First-Time Setup
 
@@ -30,10 +34,11 @@ Settings are saved to `~/.spinbot/config.json` and persist between sessions. Rec
 
 ## Features
 
+- Supports both **Firebot** and **Streamer.bot**
 - 8 animated spinner types
 - 3 odds modes: weighted visible, weighted hidden, and pure random
 - 5 color themes plus custom theme support
-- Winner announced in Twitch chat automatically via Firebot
+- Winner announced in Twitch chat automatically
 - Persistent configuration saved between sessions
 
 ## Spinners
@@ -116,7 +121,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Requires **Python 3.14+** and **Windows**. Dependencies: `pygame-ce`, `requests`.
+Requires **Python 3.14+** and **Windows**. Dependencies: `pygame-ce`, `requests`, `websocket-client`.
 
 To build the exe yourself:
 

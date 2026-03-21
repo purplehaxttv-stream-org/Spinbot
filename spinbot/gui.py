@@ -5,6 +5,7 @@ import pygame
 
 import spinbot.visuals as v
 from spinbot.firebot import FirebotAPI
+from spinbot.streamerbot import StreamerbotAPI
 from spinbot.config import load_config, save_config
 
 SPINNERS = [
@@ -100,18 +101,63 @@ def _build_entries_metadata(api, config):
     return entries
 
 
+def _build_entries_streamerbot(api, config):
+    variable_name = config.get("sb_variable_name", "")
+    bonus_variable = config.get("sb_bonus_variable")
+    bonus_weight = config.get("bonus_weight", 0)
+    entries = []
+    variables = api.get_user_globals(variable_name)
+    bonus_map = {}
+    if bonus_variable:
+        bonus_vars = api.get_user_globals(bonus_variable)
+        for var in bonus_vars:
+            uid = var.get("userName") or var.get("userId", "")
+            try:
+                bonus_map[uid] = int(var.get("value", 0))
+            except (ValueError, TypeError):
+                pass
+    for var in variables:
+        uid = var.get("userName") or var.get("userId", "")
+        if not uid:
+            continue
+        try:
+            checkins = int(var.get("value", 0))
+        except (ValueError, TypeError):
+            continue
+        bonus = bonus_map.get(uid, 0) * bonus_weight if bonus_variable else 0
+        total = checkins + bonus
+        if total > 0:
+            entries.append((uid, total))
+    return entries
+
+
 def build_entries(api, config):
     """Fetch viewer data and return a list of (name, weight) entry tuples."""
-    mode = config.get("mode", "currency")
-    if mode == "metadata":
-        return _build_entries_metadata(api, config)
-    return _build_entries_currency(api, config)
+    bot_type = config.get("bot_type", "firebot")
+    if bot_type == "streamerbot":
+        entries = _build_entries_streamerbot(api, config)
+    elif config.get("mode") == "metadata":
+        entries = _build_entries_metadata(api, config)
+    else:
+        entries = _build_entries_currency(api, config)
+    exclude = config.get("streamer_name", "").lower()
+    if exclude:
+        entries = [(name, w) for name, w in entries if name.lower() != exclude]
+    return entries
+
+
+def _create_api(config):
+    """Create the appropriate API client based on config."""
+    if config and config.get("bot_type") == "streamerbot":
+        url = config.get("sb_url", "ws://127.0.0.1:8080/")
+        return StreamerbotAPI(url=url)
+    return FirebotAPI()
 
 
 def run_app():
     """Launch the main Spinbot GUI loop."""
-    api = FirebotAPI()
     config = load_config()
+    api = _create_api(config)
 
     if config:
         if config.get("custom_theme"):
@@ -124,8 +170,9 @@ def run_app():
     pygame.display.set_caption("Spinbot")
     clock = pygame.time.Clock()
 
-    state = "main"  # main, config_mode, config_currency, config_bonus, config_bonus_weight,
-                     # config_meta_key, config_meta_bonus, config_meta_bonus_weight,
+    state = "main"  # main, config_bot, config_mode, config_currency, config_bonus,
+                     # config_bonus_weight, config_meta_key, config_sb_variable,
+                     # config_sb_bonus, config_sb_bonus_weight,
                      # spinner_select, odds_select, theme_select
     selected_spinner = None
     status_message = ""
@@ -178,23 +225,84 @@ def run_app():
                 btn.draw(screen)
                 if clicked and btn.check_click(clicked):
                     if btn.tag == "configure":
-                        state = "config_mode"
-                        try:
-                            currencies_cache = api.get_currencies()
-                        except Exception:
-                            currencies_cache = {}
+                        state = "config_bot"
                     elif btn.tag == "theme":
                         state = "theme_select"
                     elif btn.tag == "quit":
                         running = False
                     elif btn.tag and btn.tag.startswith("spinner_"):
                         idx = int(btn.tag.split("_")[1])
-                        if config and config.get("mode"):
+                        if config and (config.get("mode") or config.get("sb_variable_name")):
                             selected_spinner = idx
                             state = "odds_select"
                         else:
-                            status_message = "Configure currencies first!"
+                            status_message = "Run Configure first!"
                             status_timer = 2.0
+
+        elif state == "config_bot":
+            _draw_page_title(screen, fonts, "Select Your Bot Platform")
+            buttons = _get_bot_select_buttons(fonts)
+            for btn in buttons:
+                btn.check_hover(mouse_pos)
+                btn.draw(screen)
+                if clicked and btn.check_click(clicked):
+                    if btn.tag == "firebot":
+                        config_temp = {"bot_type": "firebot"}
+                        state = "config_streamer_name"
+                        input_text = config.get("streamer_name", "") if config else ""
+                        input_label = "Your Twitch username (excluded from giveaways):"
+                    elif btn.tag == "streamerbot":
+                        config_temp = {"bot_type": "streamerbot"}
+                        state = "config_streamer_name"
+                        input_text = config.get("streamer_name", "") if config else ""
+                        input_label = "Your Twitch username (excluded from giveaways):"
+                    elif btn.tag == "back":
+                        state = "main"
+
+        elif state == "config_streamer_name":
+            _draw_text_input(screen, fonts, input_label, input_text)
+            confirm_btn = Button((v.WIDTH // 2 - 60, 400, 120, 40), "Confirm", fonts["medium"],
+                                 color=v.ACCENT_COLOR, text_color=v.BG_COLOR)
+            confirm_btn.check_hover(mouse_pos)
+            confirm_btn.draw(screen)
+            back_btn = Button((v.WIDTH // 2 - 60, 460, 120, 40), "Back", fonts["medium"])
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+            if clicked:
+                if confirm_btn.check_click(clicked):
+                    config_temp["streamer_name"] = input_text.strip()
+                    if config_temp["bot_type"] == "firebot":
+                        state = "config_mode"
+                        try:
+                            fb = FirebotAPI()
+                            currencies_cache = fb.get_currencies()
+                        except Exception:
+                            currencies_cache = {}
+                    else:
+                        state = "config_sb_variable"
+                        input_text = ""
+                        input_label = "Enter user global variable for check-ins:"
+                elif back_btn.check_click(clicked):
+                    state = "config_bot"
+            for event in events:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN:
+                        config_temp["streamer_name"] = input_text.strip()
+                        if config_temp["bot_type"] == "firebot":
+                            state = "config_mode"
+                            try:
+                                fb = FirebotAPI()
+                                currencies_cache = fb.get_currencies()
+                            except Exception:
+                                currencies_cache = {}
+                        else:
+                            state = "config_sb_variable"
+                            input_text = ""
+                            input_label = "Enter user global variable for check-ins:"
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+                    elif event.unicode and len(input_text) < 30:
+                        input_text += event.unicode
 
         elif state == "config_mode":
             _draw_config_mode(screen, fonts, mouse_pos, clicked, config_temp,
@@ -205,15 +313,15 @@ def run_app():
                 btn.draw(screen)
                 if clicked and btn.check_click(clicked):
                     if btn.tag == "currency":
-                        config_temp = {"mode": "currency"}
+                        config_temp["mode"] = "currency"
                         state = "config_currency"
                     elif btn.tag == "metadata":
-                        config_temp = {"mode": "metadata"}
+                        config_temp["mode"] = "metadata"
                         state = "config_meta_key"
                         input_text = ""
                         input_label = "Enter metadata key for check-ins:"
                     elif btn.tag == "back":
-                        state = "main"
+                        state = "config_bot"
 
         elif state == "config_currency":
             buttons = _get_currency_buttons(fonts, currencies_cache)
@@ -244,6 +352,7 @@ def run_app():
                         _save_and_apply_config(config_temp, config)
                         config = config_temp
                         save_config(config)
+                        api = _create_api(config)
                         state = "main"
                         status_message = "Configuration saved!"
                         status_timer = 2.0
@@ -270,6 +379,7 @@ def run_app():
                     _save_and_apply_config(config_temp, config)
                     config = config_temp
                     save_config(config)
+                    api = _create_api(config)
                     state = "main"
                     status_message = "Configuration saved!"
                     status_timer = 2.0
@@ -289,6 +399,7 @@ def run_app():
                         _save_and_apply_config(config_temp, config)
                         config = config_temp
                         save_config(config)
+                        api = _create_api(config)
                         state = "main"
                         status_message = "Configuration saved!"
                         status_timer = 2.0
@@ -314,6 +425,7 @@ def run_app():
                     _save_and_apply_config(config_temp, config)
                     config = config_temp
                     save_config(config)
+                    api = _create_api(config)
                     state = "main"
                     status_message = "Configuration saved!"
                     status_timer = 2.0
@@ -328,12 +440,141 @@ def run_app():
                         _save_and_apply_config(config_temp, config)
                         config = config_temp
                         save_config(config)
+                        api = _create_api(config)
                         state = "main"
                         status_message = "Configuration saved!"
                         status_timer = 2.0
                     elif event.key == pygame.K_BACKSPACE:
                         input_text = input_text[:-1]
                     elif event.unicode and len(input_text) < 30:
+                        input_text += event.unicode
+
+        elif state == "config_sb_variable":
+            _draw_text_input(screen, fonts, input_label, input_text)
+            confirm_btn = Button((v.WIDTH // 2 - 60, 400, 120, 40), "Confirm", fonts["medium"],
+                                 color=v.ACCENT_COLOR, text_color=v.BG_COLOR)
+            confirm_btn.check_hover(mouse_pos)
+            confirm_btn.draw(screen)
+            back_btn = Button((v.WIDTH // 2 - 60, 460, 120, 40), "Back", fonts["medium"])
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+            if clicked:
+                if confirm_btn.check_click(clicked) and input_text:
+                    config_temp["sb_variable_name"] = input_text
+                    state = "config_sb_bonus"
+                elif back_btn.check_click(clicked):
+                    state = "config_bot"
+            for event in events:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN and input_text:
+                        config_temp["sb_variable_name"] = input_text
+                        state = "config_sb_bonus"
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+                    elif event.unicode and len(input_text) < 30:
+                        input_text += event.unicode
+
+        elif state == "config_sb_bonus":
+            _draw_page_title(screen, fonts, "Bonus Variable (optional)")
+            hint = fonts["hint"].render(
+                "Add a separate variable for first check-in bonuses?", True, v.DIM_TEXT)
+            screen.blit(hint, hint.get_rect(center=(v.WIDTH // 2, 90)))
+            btn_w, btn_h = 300, 50
+            cx = v.WIDTH // 2
+            yes_btn = Button((cx - btn_w // 2, 200, btn_w, btn_h), "Yes, add bonus variable",
+                             fonts["medium"], tag="yes")
+            skip_btn = Button((cx - btn_w // 2, 270, btn_w, btn_h), "Skip (no bonus)",
+                              fonts["medium"], tag="skip")
+            back_btn = Button((cx - btn_w // 2, 380, btn_w, btn_h), "Back",
+                              fonts["medium"], tag="back")
+            for btn in [yes_btn, skip_btn, back_btn]:
+                btn.check_hover(mouse_pos)
+                btn.draw(screen)
+                if clicked and btn.check_click(clicked):
+                    if btn.tag == "yes":
+                        state = "config_sb_bonus_var"
+                        input_text = ""
+                        input_label = "Enter bonus variable name:"
+                    elif btn.tag == "skip":
+                        config_temp["sb_bonus_variable"] = None
+                        config_temp["bonus_weight"] = 0
+                        _save_and_apply_config(config_temp, config)
+                        config = config_temp
+                        save_config(config)
+                        api = _create_api(config)
+                        state = "main"
+                        status_message = "Configuration saved!"
+                        status_timer = 2.0
+                    elif btn.tag == "back":
+                        state = "config_sb_variable"
+                        input_text = config_temp.get("sb_variable_name", "")
+                        input_label = "Enter user global variable for check-ins:"
+
+        elif state == "config_sb_bonus_var":
+            _draw_text_input(screen, fonts, input_label, input_text)
+            confirm_btn = Button((v.WIDTH // 2 - 60, 400, 120, 40), "Confirm", fonts["medium"],
+                                 color=v.ACCENT_COLOR, text_color=v.BG_COLOR)
+            confirm_btn.check_hover(mouse_pos)
+            confirm_btn.draw(screen)
+            back_btn = Button((v.WIDTH // 2 - 60, 460, 120, 40), "Back", fonts["medium"])
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+            if clicked:
+                if confirm_btn.check_click(clicked) and input_text:
+                    config_temp["sb_bonus_variable"] = input_text
+                    state = "config_sb_bonus_weight"
+                    input_text = "1"
+                    input_label = "Extra entries per first check-in:"
+                elif back_btn.check_click(clicked):
+                    state = "config_sb_bonus"
+            for event in events:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN and input_text:
+                        config_temp["sb_bonus_variable"] = input_text
+                        state = "config_sb_bonus_weight"
+                        input_text = "1"
+                        input_label = "Extra entries per first check-in:"
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+                    elif event.unicode and len(input_text) < 30:
+                        input_text += event.unicode
+
+        elif state == "config_sb_bonus_weight":
+            _draw_text_input(screen, fonts, input_label, input_text)
+            confirm_btn = Button((v.WIDTH // 2 - 60, 400, 120, 40), "Confirm", fonts["medium"],
+                                 color=v.ACCENT_COLOR, text_color=v.BG_COLOR)
+            confirm_btn.check_hover(mouse_pos)
+            confirm_btn.draw(screen)
+            if clicked:
+                if confirm_btn.check_click(clicked):
+                    try:
+                        config_temp["bonus_weight"] = int(input_text) if input_text else 1
+                    except ValueError:
+                        config_temp["bonus_weight"] = 1
+                    _save_and_apply_config(config_temp, config)
+                    config = config_temp
+                    save_config(config)
+                    api = _create_api(config)
+                    state = "main"
+                    status_message = "Configuration saved!"
+                    status_timer = 2.0
+            for event in events:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN:
+                        try:
+                            config_temp["bonus_weight"] = int(input_text) if input_text else 1
+                        except ValueError:
+                            config_temp["bonus_weight"] = 1
+                        _save_and_apply_config(config_temp, config)
+                        config = config_temp
+                        save_config(config)
+                        api = _create_api(config)
+                        state = "main"
+                        status_message = "Configuration saved!"
+                        status_timer = 2.0
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+                    elif event.unicode and event.unicode.isdigit() and len(input_text) < 5:
                         input_text += event.unicode
 
         elif state == "odds_select":
@@ -387,12 +628,12 @@ def run_app():
 
 
 def _save_and_apply_config(new_config, old_config):
-    """Preserve theme from old config."""
+    """Preserve theme and other persistent settings from old config."""
     if old_config:
         if old_config.get("theme"):
-            new_config["theme"] = old_config["theme"]
+            new_config.setdefault("theme", old_config["theme"])
         if old_config.get("custom_theme"):
-            new_config["custom_theme"] = old_config["custom_theme"]
+            new_config.setdefault("custom_theme", old_config["custom_theme"])
 
 
 def _run_spinner(api, config, spinner_idx, show_weights, use_weights):
@@ -425,15 +666,21 @@ def _draw_main_menu(screen, fonts, config, mouse_pos, clicked, set_state, api, s
 
     # Config summary
     y = 75
-    if config and config.get("mode"):
-        mode = config.get("mode", "currency")
-        if mode == "currency":
-            info = f"Currency: {config.get('checkin_currency_name', '?')}"
+    bot_type = config.get("bot_type", "firebot") if config else "firebot"
+    bot_label = "Streamer.bot" if bot_type == "streamerbot" else "Firebot"
+    if config and (config.get("mode") or config.get("sb_variable_name")):
+        if bot_type == "streamerbot":
+            info = f"[{bot_label}]  Variable: {config.get('sb_variable_name', '?')}"
+            bonus = config.get("sb_bonus_variable")
+            if bonus:
+                info += f"  |  Bonus: {bonus} (+{config.get('bonus_weight', 0)})"
+        elif config.get("mode") == "currency":
+            info = f"[{bot_label}]  Currency: {config.get('checkin_currency_name', '?')}"
             bonus = config.get("bonus_currency_name")
             if bonus:
                 info += f"  |  Bonus: {bonus} (+{config.get('bonus_weight', 0)})"
         else:
-            info = f"Metadata: {config.get('checkin_metadata_key', '?')}"
+            info = f"[{bot_label}]  Metadata: {config.get('checkin_metadata_key', '?')}"
         text = fonts["hint"].render(info, True, v.DIM_TEXT)
         screen.blit(text, text.get_rect(center=(v.WIDTH // 2, y)))
     else:
@@ -469,7 +716,7 @@ def _get_main_buttons(fonts, config):
     total_settings_w = settings_w * 3 + settings_gap * 2
     sx = (v.WIDTH - total_settings_w) // 2
 
-    buttons.append(Button((sx, bottom_y, settings_w, btn_h), "Configure Currencies", fonts["small"],
+    buttons.append(Button((sx, bottom_y, settings_w, btn_h), "Configure", fonts["small"],
                           color=v.PANEL_BG, tag="configure"))
     buttons.append(Button((sx + settings_w + settings_gap, bottom_y, settings_w, btn_h),
                           f"Theme: {v.get_theme()['name']}", fonts["small"],
@@ -483,6 +730,17 @@ def _get_main_buttons(fonts, config):
 def _draw_page_title(screen, fonts, title):
     text = fonts["large"].render(title, True, v.ACCENT_COLOR)
     screen.blit(text, text.get_rect(center=(v.WIDTH // 2, 40)))
+
+
+def _get_bot_select_buttons(fonts):
+    btn_w = 300
+    btn_h = 50
+    cx = v.WIDTH // 2
+    return [
+        Button((cx - btn_w // 2, 200, btn_w, btn_h), "Firebot", fonts["medium"], tag="firebot"),
+        Button((cx - btn_w // 2, 270, btn_w, btn_h), "Streamer.bot", fonts["medium"], tag="streamerbot"),
+        Button((cx - btn_w // 2, 380, btn_w, btn_h), "Back", fonts["medium"], tag="back"),
+    ]
 
 
 def _get_config_mode_buttons(fonts):
