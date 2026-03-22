@@ -48,6 +48,20 @@ ODDS_MODES = [
     ("Equal (pure random)", False, False),
 ]
 
+DEFAULT_MESSAGES = {
+    "raffle_open": "Type !enter to join the giveaway! You have {time} seconds!",
+    "raffle_close": "Entries are closed! Spinning the wheel...",
+    "winner_twitch": "Congratulations @{winner}, you won the giveaway!",
+    "winner_discord": "Congratulations **{winner}**, you won the giveaway!",
+}
+
+
+def _get_msg(config, key):
+    """Get a custom message or the default."""
+    if config and config.get("messages"):
+        return config["messages"].get(key, DEFAULT_MESSAGES[key])
+    return DEFAULT_MESSAGES[key]
+
 
 class Button:
     """Clickable, hoverable rectangle with a text label."""
@@ -189,6 +203,7 @@ def run_app():
             v.set_theme(config["theme"])
 
     pygame.init()
+    pygame.key.set_repeat(400, 50)
     screen = pygame.display.set_mode((v.WIDTH, v.HEIGHT))
     pygame.display.set_caption("Spinbot")
     clock = pygame.time.Clock()
@@ -209,6 +224,9 @@ def run_app():
     input_text = ""
     input_label = ""
     input_callback = None
+
+    msg_editing = None  # Which message key is being edited
+    cursor_pos = 0  # Cursor position in input_text
 
     # For Twitch raffle
     twitch_chat = None
@@ -271,6 +289,47 @@ def run_app():
                         pass
                 elif event.unicode and event.unicode.isprintable():
                     input_text += event.unicode
+            elif event.type == pygame.KEYDOWN and state == "config_messages" and msg_editing:
+                if event.key == pygame.K_BACKSPACE:
+                    if cursor_pos > 0:
+                        input_text = input_text[:cursor_pos - 1] + input_text[cursor_pos:]
+                        cursor_pos -= 1
+                elif event.key == pygame.K_DELETE:
+                    if cursor_pos < len(input_text):
+                        input_text = input_text[:cursor_pos] + input_text[cursor_pos + 1:]
+                elif event.key == pygame.K_LEFT:
+                    cursor_pos = max(0, cursor_pos - 1)
+                elif event.key == pygame.K_RIGHT:
+                    cursor_pos = min(len(input_text), cursor_pos + 1)
+                elif event.key == pygame.K_HOME:
+                    cursor_pos = 0
+                elif event.key == pygame.K_END:
+                    cursor_pos = len(input_text)
+                elif event.key == pygame.K_RETURN:
+                    if config is None:
+                        config = {}
+                    if "messages" not in config:
+                        config["messages"] = {}
+                    config["messages"][msg_editing] = input_text
+                    save_config(config)
+                    msg_editing = None
+                elif event.key == pygame.K_ESCAPE:
+                    msg_editing = None
+                elif event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+                    try:
+                        import subprocess
+                        result = subprocess.run(
+                            ["powershell", "-command", "Get-Clipboard"],
+                            capture_output=True, text=True, timeout=2)
+                        if result.stdout.strip():
+                            paste = result.stdout.strip()
+                            input_text = input_text[:cursor_pos] + paste + input_text[cursor_pos:]
+                            cursor_pos += len(paste)
+                    except Exception:
+                        pass
+                elif event.unicode and event.unicode.isprintable():
+                    input_text = input_text[:cursor_pos] + event.unicode + input_text[cursor_pos:]
+                    cursor_pos += 1
 
         screen.fill(v.BG_COLOR)
         fonts = v.get_fonts()
@@ -291,6 +350,9 @@ def run_app():
                     elif btn.tag == "discord":
                         input_text = config.get("discord_webhook", "") if config else ""
                         state = "config_discord"
+                    elif btn.tag == "messages":
+                        msg_editing = None
+                        state = "config_messages"
                     elif btn.tag == "theme":
                         state = "theme_select"
                     elif btn.tag == "quit":
@@ -815,7 +877,7 @@ def run_app():
             if not raffle_announced and twitch_chat and twitch_chat._connected:
                 try:
                     twitch_chat.send_message(
-                        f"Type !enter to join the giveaway! You have {raffle_duration} seconds!")
+                        _get_msg(config, "raffle_open").format(time=raffle_duration))
                     raffle_announced = True
                     raffle_timer = raffle_duration  # Start timer NOW, after connection is ready
                 except Exception:
@@ -866,14 +928,14 @@ def run_app():
 
             if auto_closed:
                 try:
-                    twitch_chat.send_message("Entries are closed! Spinning the wheel...")
+                    twitch_chat.send_message(_get_msg(config, "raffle_close"))
                 except Exception:
                     pass
                 state = "raffle_spinner"
             elif clicked:
                 if close_btn.check_click(clicked) and count > 0:
                     try:
-                        twitch_chat.send_message("Entries are closed! Spinning the wheel...")
+                        twitch_chat.send_message(_get_msg(config, "raffle_close"))
                     except Exception:
                         pass
                     state = "raffle_spinner"
@@ -942,12 +1004,12 @@ def run_app():
                         try:
                             if twitch_chat:
                                 twitch_chat.send_message(
-                                    f"Congratulations @{name}, you won the giveaway!")
+                                    _get_msg(config, "winner_twitch").format(winner=name))
                         except Exception:
                             pass
                         webhook = config.get("discord_webhook") if config else None
                         if webhook:
-                            discord_send_winner(webhook, name)
+                            discord_send_winner(webhook, name, _get_msg(config, "winner_discord"))
 
                     pygame.display.quit()
                     module = importlib.import_module(module_name)
@@ -1023,6 +1085,125 @@ def run_app():
                 elif back_btn.check_click(clicked):
                     state = "main"
 
+        elif state == "config_messages":
+            _draw_page_title(screen, fonts, "Customize Messages")
+
+            msg_labels = {
+                "raffle_open": "Raffle Open",
+                "raffle_close": "Raffle Close",
+                "winner_twitch": "Winner (Twitch)",
+                "winner_discord": "Winner (Discord)",
+            }
+            placeholders = {
+                "raffle_open": "{time}",
+                "raffle_close": "",
+                "winner_twitch": "{winner}",
+                "winner_discord": "{winner}",
+            }
+
+            btn_w, btn_h = 140, 36
+            cx = v.WIDTH // 2
+            y = 90
+            for key, label in msg_labels.items():
+                current = _get_msg(config, key)
+                is_editing = msg_editing == key
+
+                # Label
+                lbl = fonts["small"].render(label, True, v.ACCENT_COLOR)
+                screen.blit(lbl, (40, y + 2))
+
+                # Value box
+                box_x = 200
+                box_w = v.WIDTH - 200 - btn_w - 30
+                box_rect = pygame.Rect(box_x, y, box_w, btn_h)
+                pygame.draw.rect(screen, v.PANEL_BG, box_rect, border_radius=6)
+                border_color = v.ACCENT_COLOR if is_editing else v.DIM_TEXT
+                pygame.draw.rect(screen, border_color, box_rect, 2, border_radius=6)
+
+                if is_editing:
+                    # Render with cursor
+                    before = input_text[:cursor_pos]
+                    after = input_text[cursor_pos:]
+                    display = before + "|" + after
+                    text_surf = fonts["small"].render(display, True, v.TEXT_COLOR)
+                    max_w = box_w - 16
+                    # Scroll to keep cursor visible
+                    if text_surf.get_width() > max_w:
+                        cursor_surf = fonts["small"].render(before + "|", True, v.TEXT_COLOR)
+                        if cursor_surf.get_width() > max_w:
+                            # Trim from left to keep cursor in view
+                            trim = cursor_surf.get_width() - max_w + 20
+                            full_text = display
+                            while trim > 0 and len(full_text) > 1:
+                                full_text = full_text[1:]
+                                text_surf = fonts["small"].render(full_text, True, v.TEXT_COLOR)
+                                trim = text_surf.get_width() - max_w
+                    # Click to position cursor
+                    if clicked and box_rect.collidepoint(clicked):
+                        click_x = clicked[0] - box_x - 8
+                        best = 0
+                        for ci in range(len(input_text) + 1):
+                            w = fonts["small"].render(input_text[:ci], True, v.TEXT_COLOR).get_width()
+                            if w <= click_x:
+                                best = ci
+                        cursor_pos = best
+                else:
+                    display = current
+                    text_surf = fonts["small"].render(display, True, v.TEXT_COLOR)
+                    max_w = box_w - 16
+                    if text_surf.get_width() > max_w:
+                        while len(display) > 1 and text_surf.get_width() > max_w:
+                            display = display[1:]
+                            text_surf = fonts["small"].render(display, True, v.TEXT_COLOR)
+                    # Click on box starts editing
+                    if clicked and box_rect.collidepoint(clicked) and not msg_editing:
+                        msg_editing = key
+                        input_text = current
+                        cursor_pos = len(current)
+                screen.blit(text_surf, text_surf.get_rect(midleft=(box_x + 8, box_rect.centery)))
+
+                # Edit / Reset button
+                edit_x = v.WIDTH - btn_w - 15
+                if is_editing:
+                    btn_label = "Cancel"
+                elif current != DEFAULT_MESSAGES[key]:
+                    btn_label = "Reset"
+                else:
+                    btn_label = "Edit"
+                ebtn = Button((edit_x, y, btn_w, btn_h), btn_label, fonts["small"],
+                              color=v.PANEL_BG, tag=f"msg_{key}")
+                ebtn.check_hover(mouse_pos)
+                ebtn.draw(screen)
+                if clicked and ebtn.check_click(clicked):
+                    if is_editing:
+                        msg_editing = None
+                    elif btn_label == "Reset":
+                        if config and "messages" in config:
+                            config["messages"].pop(key, None)
+                            save_config(config)
+                        status_message = f"{label} reset to default."
+                        status_timer = 1.5
+                    else:
+                        msg_editing = key
+                        input_text = current
+                        cursor_pos = len(current)
+
+                # Placeholder hint
+                ph = placeholders.get(key, "")
+                if ph:
+                    hint = fonts["hint"].render(f"Use {ph}", True, v.DIM_TEXT)
+                    screen.blit(hint, (box_x, y + btn_h + 2))
+
+                y += btn_h + (22 if ph else 10)
+
+            # Back button
+            back_btn = Button((cx - 90, y + 15, 180, 40), "Back", fonts["medium"], tag="back")
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+            if clicked and back_btn.check_click(clicked):
+                msg_editing = None
+                state = "main"
+
         elif state == "odds_select":
             _draw_page_title(screen, fonts, f"Odds Mode - {SPINNERS[selected_spinner][1]}")
             buttons = _get_odds_buttons(fonts)
@@ -1097,12 +1278,12 @@ def _run_spinner(api, config, spinner_idx, show_weights, use_weights):
 
     def on_winner(name):
         try:
-            api.send_chat(f"Congratulations @{name}, you won the giveaway!")
+            api.send_chat(_get_msg(config, "winner_twitch").format(winner=name))
         except Exception:
             pass
         webhook = config.get("discord_webhook") if config else None
         if webhook:
-            discord_send_winner(webhook, name)
+            discord_send_winner(webhook, name, _get_msg(config, "winner_discord"))
 
     module = importlib.import_module(module_name)
     run_fn = getattr(module, func_name)
@@ -1166,24 +1347,29 @@ def _get_main_buttons(fonts, config):
     buttons.append(Button((start_x, raffle_y, raffle_w, btn_h), "Start Raffle (!enter)",
                           fonts["small"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR, tag="raffle"))
 
-    # Bottom buttons
-    bottom_y = raffle_y + btn_h + 20
+    # Bottom buttons - row 1
+    bottom_y = raffle_y + btn_h + 15
     settings_w = 185
     settings_gap = 10
-    total_settings_w = settings_w * 4 + settings_gap * 3
-    sx = (v.WIDTH - total_settings_w) // 2
 
     discord_label = "Discord: On" if config and config.get("discord_webhook") else "Discord: Off"
-    buttons.append(Button((sx, bottom_y, settings_w, btn_h), "Configure", fonts["small"],
-                          color=v.PANEL_BG, tag="configure"))
-    buttons.append(Button((sx + settings_w + settings_gap, bottom_y, settings_w, btn_h),
-                          discord_label, fonts["small"],
-                          color=v.PANEL_BG, tag="discord"))
-    buttons.append(Button((sx + 2 * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
-                          f"Theme: {v.get_theme()['name']}", fonts["small"],
-                          color=v.PANEL_BG, tag="theme"))
-    buttons.append(Button((sx + 3 * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
-                          "Quit", fonts["small"], color=v.PANEL_BG, tag="quit"))
+    row1 = ["Configure", discord_label, "Messages"]
+    row1_tags = ["configure", "discord", "messages"]
+    total_w = settings_w * len(row1) + settings_gap * (len(row1) - 1)
+    sx = (v.WIDTH - total_w) // 2
+    for i, (lbl, tag) in enumerate(zip(row1, row1_tags)):
+        buttons.append(Button((sx + i * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
+                              lbl, fonts["small"], color=v.PANEL_BG, tag=tag))
+
+    # Bottom buttons - row 2
+    bottom_y2 = bottom_y + btn_h + 8
+    row2 = [f"Theme: {v.get_theme()['name']}", "Quit"]
+    row2_tags = ["theme", "quit"]
+    total_w2 = settings_w * len(row2) + settings_gap * (len(row2) - 1)
+    sx2 = (v.WIDTH - total_w2) // 2
+    for i, (lbl, tag) in enumerate(zip(row2, row2_tags)):
+        buttons.append(Button((sx2 + i * (settings_w + settings_gap), bottom_y2, settings_w, btn_h),
+                              lbl, fonts["small"], color=v.PANEL_BG, tag=tag))
 
     return buttons
 
