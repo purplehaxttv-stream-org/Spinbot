@@ -13,6 +13,7 @@ from spinbot.streamerbot import StreamerbotAPI
 from spinbot.twitch_auth import start_device_flow, poll_for_token, validate_token, refresh_token
 from spinbot.twitch import TwitchAPI, TwitchChat
 from spinbot.config import load_config, save_config
+from spinbot.discord import send_winner as discord_send_winner
 
 
 def _load_credentials():
@@ -196,7 +197,8 @@ def run_app():
                      # config_bonus_weight, config_meta_key, config_sb_variable,
                      # config_sb_bonus, config_sb_bonus_weight,
                      # spinner_select, odds_select, theme_select,
-                     # twitch_auth, raffle_setup, raffle_active, raffle_spinner
+                     # twitch_auth, raffle_setup, raffle_active, raffle_spinner,
+                     # config_discord
     selected_spinner = None
     status_message = ""
     status_timer = 0
@@ -244,6 +246,31 @@ def run_app():
                 else:
                     if event.unicode and len(input_text) < 30:
                         input_text += event.unicode
+            elif event.type == pygame.KEYDOWN and state == "config_discord":
+                if event.key == pygame.K_BACKSPACE:
+                    input_text = input_text[:-1]
+                elif event.key == pygame.K_RETURN and input_text.strip():
+                    if config is None:
+                        config = {}
+                    config["discord_webhook"] = input_text.strip()
+                    save_config(config)
+                    status_message = "Discord webhook saved!"
+                    status_timer = 2.0
+                    state = "main"
+                elif event.key == pygame.K_ESCAPE:
+                    state = "main"
+                elif event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+                    try:
+                        import subprocess
+                        result = subprocess.run(
+                            ["powershell", "-command", "Get-Clipboard"],
+                            capture_output=True, text=True, timeout=2)
+                        if result.stdout.strip():
+                            input_text += result.stdout.strip()
+                    except Exception:
+                        pass
+                elif event.unicode and event.unicode.isprintable():
+                    input_text += event.unicode
 
         screen.fill(v.BG_COLOR)
         fonts = v.get_fonts()
@@ -261,6 +288,9 @@ def run_app():
                 if clicked and btn.check_click(clicked):
                     if btn.tag == "configure":
                         state = "config_bot"
+                    elif btn.tag == "discord":
+                        input_text = config.get("discord_webhook", "") if config else ""
+                        state = "config_discord"
                     elif btn.tag == "theme":
                         state = "theme_select"
                     elif btn.tag == "quit":
@@ -915,6 +945,9 @@ def run_app():
                                     f"Congratulations @{name}, you won the giveaway!")
                         except Exception:
                             pass
+                        webhook = config.get("discord_webhook") if config else None
+                        if webhook:
+                            discord_send_winner(webhook, name)
 
                     pygame.display.quit()
                     module = importlib.import_module(module_name)
@@ -947,6 +980,48 @@ def run_app():
                 twitch_chat = TwitchChat(token, login, login)
                 twitch_chat.start()
                 state = "raffle_active"
+
+        elif state == "config_discord":
+            _draw_text_input(screen, fonts, "Discord Webhook URL", input_text)
+
+            hint1 = fonts["hint"].render("Paste your Discord webhook URL to announce winners.", True, v.DIM_TEXT)
+            screen.blit(hint1, hint1.get_rect(center=(v.WIDTH // 2, 120)))
+            hint2 = fonts["hint"].render("Leave empty and click Disable to turn off.", True, v.DIM_TEXT)
+            screen.blit(hint2, hint2.get_rect(center=(v.WIDTH // 2, 145)))
+
+            btn_w, btn_h = 180, 45
+            cx = v.WIDTH // 2
+            save_btn = Button((cx - btn_w - 10, 370, btn_w, btn_h), "Save",
+                              fonts["medium"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR, tag="save")
+            save_btn.check_hover(mouse_pos)
+            save_btn.draw(screen)
+            clear_btn = Button((cx + 10, 370, btn_w, btn_h), "Disable",
+                               fonts["medium"], tag="clear")
+            clear_btn.check_hover(mouse_pos)
+            clear_btn.draw(screen)
+            back_btn = Button((cx - btn_w // 2, 430, btn_w, btn_h), "Cancel",
+                              fonts["medium"], tag="back")
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+
+            if clicked:
+                if save_btn.check_click(clicked) and input_text.strip():
+                    if config is None:
+                        config = {}
+                    config["discord_webhook"] = input_text.strip()
+                    save_config(config)
+                    status_message = "Discord webhook saved!"
+                    status_timer = 2.0
+                    state = "main"
+                elif clear_btn.check_click(clicked):
+                    if config:
+                        config.pop("discord_webhook", None)
+                        save_config(config)
+                    status_message = "Discord webhook disabled."
+                    status_timer = 2.0
+                    state = "main"
+                elif back_btn.check_click(clicked):
+                    state = "main"
 
         elif state == "odds_select":
             _draw_page_title(screen, fonts, f"Odds Mode - {SPINNERS[selected_spinner][1]}")
@@ -1025,6 +1100,9 @@ def _run_spinner(api, config, spinner_idx, show_weights, use_weights):
             api.send_chat(f"Congratulations @{name}, you won the giveaway!")
         except Exception:
             pass
+        webhook = config.get("discord_webhook") if config else None
+        if webhook:
+            discord_send_winner(webhook, name)
 
     module = importlib.import_module(module_name)
     run_fn = getattr(module, func_name)
@@ -1090,17 +1168,21 @@ def _get_main_buttons(fonts, config):
 
     # Bottom buttons
     bottom_y = raffle_y + btn_h + 20
-    settings_w = 250
-    settings_gap = 15
-    total_settings_w = settings_w * 3 + settings_gap * 2
+    settings_w = 185
+    settings_gap = 10
+    total_settings_w = settings_w * 4 + settings_gap * 3
     sx = (v.WIDTH - total_settings_w) // 2
 
+    discord_label = "Discord: On" if config and config.get("discord_webhook") else "Discord: Off"
     buttons.append(Button((sx, bottom_y, settings_w, btn_h), "Configure", fonts["small"],
                           color=v.PANEL_BG, tag="configure"))
     buttons.append(Button((sx + settings_w + settings_gap, bottom_y, settings_w, btn_h),
+                          discord_label, fonts["small"],
+                          color=v.PANEL_BG, tag="discord"))
+    buttons.append(Button((sx + 2 * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
                           f"Theme: {v.get_theme()['name']}", fonts["small"],
                           color=v.PANEL_BG, tag="theme"))
-    buttons.append(Button((sx + 2 * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
+    buttons.append(Button((sx + 3 * (settings_w + settings_gap), bottom_y, settings_w, btn_h),
                           "Quit", fonts["small"], color=v.PANEL_BG, tag="quit"))
 
     return buttons
@@ -1177,10 +1259,19 @@ def _get_bonus_buttons(fonts, currencies, checkin_id):
 def _draw_text_input(screen, fonts, label, text):
     _draw_page_title(screen, fonts, label)
     # Input box
-    box_rect = pygame.Rect(v.WIDTH // 2 - 200, 300, 400, 50)
+    box_w = min(700, v.WIDTH - 40)
+    box_rect = pygame.Rect(v.WIDTH // 2 - box_w // 2, 300, box_w, 50)
     pygame.draw.rect(screen, v.PANEL_BG, box_rect, border_radius=8)
     pygame.draw.rect(screen, v.ACCENT_COLOR, box_rect, 2, border_radius=8)
-    text_surf = fonts["medium"].render(text + "|", True, v.TEXT_COLOR)
+    # Show tail end of text if it overflows
+    display_text = text + "|"
+    max_w = box_w - 30
+    text_surf = fonts["medium"].render(display_text, True, v.TEXT_COLOR)
+    if text_surf.get_width() > max_w:
+        # Trim from the left until it fits
+        while len(display_text) > 1 and text_surf.get_width() > max_w:
+            display_text = display_text[1:]
+            text_surf = fonts["medium"].render(display_text, True, v.TEXT_COLOR)
     screen.blit(text_surf, text_surf.get_rect(midleft=(box_rect.left + 15, box_rect.centery)))
 
 

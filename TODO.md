@@ -56,8 +56,12 @@
 - [x] Entry pools are separate (check-in = loyalty, !enter = who's here)
 
 ## v3.0 — Discord Integration
+- [x] Discord webhook for winner announcements
+- [x] Configurable webhook URL in UI with clipboard paste support
+- [x] Works with both check-in and raffle giveaways
+
+### Future Discord Enhancements
 - [ ] Discord bot connection
 - [ ] `!enter` in a configured Discord channel
 - [ ] Cross-platform entry pool — Twitch + Discord entries combined into one giveaway
 - [ ] Configurable which Discord channel(s) to listen in
-- [ ] Winner announced in both Twitch chat and Discord
