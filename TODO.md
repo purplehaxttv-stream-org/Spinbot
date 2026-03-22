@@ -50,4 +50,25 @@
 - [x] Announce winner in Twitch chat via Firebot or Streamer.bot
 - [x] Selectable spinner types (8 total)
 - [x] Selectable themes (5 presets + custom)
-- [ ] Standalone .exe packaging
+- [x] Standalone .exe packaging
+- [x] Streamer excluded from own giveaways
+- [x] Wiki and issue templates
+
+---
+
+## v2.0 — Twitch Integration
+- [ ] Direct Twitch connection (IRC / EventSub)
+- [ ] `!enter` raffle mode — viewers type !enter in Twitch chat to join
+- [ ] Open/close raffle flow in the UI
+- [ ] Eligibility filters (configurable, stackable):
+  - [ ] Followers only — must be following the channel
+  - [ ] Subscribers only — must be an active sub
+  - [ ] Both — must be following AND subscribed
+- [ ] Entry pool shared between check-in mode and !enter mode (or separate)
+
+## v3.0 — Discord Integration
+- [ ] Discord bot connection
+- [ ] `!enter` in a configured Discord channel
+- [ ] Cross-platform entry pool — Twitch + Discord entries combined into one giveaway
+- [ ] Configurable which Discord channel(s) to listen in
+- [ ] Winner announced in both Twitch chat and Discord
