@@ -1,5 +1,8 @@
 """Main GUI application - all menus and navigation in pygame."""
 import importlib
+import json
+import os
+import sys
 import threading
 
 import pygame
@@ -11,8 +14,21 @@ from spinbot.twitch_auth import start_device_flow, poll_for_token, validate_toke
 from spinbot.twitch import TwitchAPI, TwitchChat
 from spinbot.config import load_config, save_config
 
-TWITCH_CLIENT_ID = "REMOVED"
-TWITCH_CLIENT_SECRET = "REMOVED"
+
+def _load_credentials():
+    """Load Twitch credentials from credentials.json (bundled in exe or local)."""
+    if getattr(sys, "_MEIPASS", None):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "credentials.json")
+    with open(path) as f:
+        return json.load(f)
+
+
+_creds = _load_credentials()
+TWITCH_CLIENT_ID = _creds["client_id"]
+TWITCH_CLIENT_SECRET = _creds["client_secret"]
 
 SPINNERS = [
     ("wheel", "Wheel", "spinbot.wheel", "run_wheel"),
