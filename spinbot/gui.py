@@ -771,7 +771,7 @@ def run_app():
                     state = "main"
 
                 # Check if auth completed
-                if not twitch_auth_thread.is_alive():
+                if twitch_auth_thread and not twitch_auth_thread.is_alive():
                     if twitch_auth_result:
                         token = twitch_auth_result["access_token"]
                         user_info = validate_token(token)
