@@ -1,8 +1,8 @@
 # Spinbot
 
-A streamer giveaway tool with animated spinners. Supports both [Firebot](https://firebot.app) and [Streamer.bot](https://streamer.bot).
+A streamer giveaway tool with animated spinners. Supports [Firebot](https://firebot.app), [Streamer.bot](https://streamer.bot), and direct Twitch `!enter` raffles with optional Discord webhook announcements.
 
-Spinbot pulls viewer check-in data from your bot platform and runs one of eight animated spinner types to pick a winner. The winner is automatically announced in your Twitch chat.
+Spinbot pulls viewer check-in data from your bot platform — or runs a live `!enter` raffle — and picks a winner using one of eight animated spinner types. Winners are automatically announced in Twitch chat and optionally in Discord.
 
 ## Getting Started
 
@@ -34,11 +34,14 @@ Settings are saved to `~/.spinbot/config.json` and persist between sessions. Rec
 
 ## Features
 
-- Supports both **Firebot** and **Streamer.bot**
+- Supports both **Firebot** and **Streamer.bot** for check-in based giveaways
+- Direct Twitch `!enter` raffle mode with eligibility filters (followers, subscribers)
+- **Discord webhook** announcements for giveaway winners
 - 8 animated spinner types
 - 3 odds modes: weighted visible, weighted hidden, and pure random
 - 5 color themes plus custom theme support
 - Winner announced in Twitch chat automatically
+- Customizable announcement messages with `{winner}` and `{time}` placeholders
 - Persistent configuration saved between sessions
 
 ## Spinners
