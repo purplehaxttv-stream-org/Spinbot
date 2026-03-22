@@ -3,20 +3,9 @@
 ## Giveaway Modes
 - [x] Check-in based (weighted by currency/metadata)
 - [x] Spin menu (weighted visible, weighted hidden, pure random)
-- [ ] !enter command based (equal chance raffle)
-  - Requires Twitch IRC connection to listen for !enter in chat
-  - **Steps to set up Twitch app:**
-    1. Go to https://dev.twitch.tv > Console > Applications > Register Your Application
-    2. Name: `Spinbot`
-    3. OAuth Redirect URL: `http://localhost`
-    4. Category: `Chat Bot`
-    5. Click Create
-    6. Copy the **Client ID** from the app's manage page
-    7. Generate and copy the **Client Secret**
-    8. Store both in Spinbot config
-  - Use device code auth flow (streamer authorizes, no redirect needed)
-  - Scope needed: `chat:read`
-  - Streamer authorizes with their own account, no bot account required
+- [x] !enter command based (equal chance raffle)
+  - Twitch IRC with device code auth flow
+  - Scopes: chat:read, chat:edit, channel:read:subscriptions, moderator:read:followers
 
 ## Spinners
 - [x] Wheel
@@ -57,14 +46,14 @@
 ---
 
 ## v2.0 — Twitch Integration
-- [ ] Direct Twitch connection (IRC / EventSub)
-- [ ] `!enter` raffle mode — viewers type !enter in Twitch chat to join
-- [ ] Open/close raffle flow in the UI
-- [ ] Eligibility filters (configurable, stackable):
-  - [ ] Followers only — must be following the channel
-  - [ ] Subscribers only — must be an active sub
-  - [ ] Both — must be following AND subscribed
-- [ ] Entry pool shared between check-in mode and !enter mode (or separate)
+- [x] Direct Twitch connection (IRC / EventSub)
+- [x] `!enter` raffle mode — viewers type !enter in Twitch chat to join
+- [x] Open/close raffle flow in the UI
+- [x] Eligibility filters (configurable, stackable):
+  - [x] Followers only — must be following the channel
+  - [x] Subscribers only — must be an active sub
+  - [x] Both — must be following AND subscribed
+- [x] Entry pools are separate (check-in = loyalty, !enter = who's here)
 
 ## v3.0 — Discord Integration
 - [ ] Discord bot connection

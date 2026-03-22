@@ -1,12 +1,18 @@
 """Main GUI application - all menus and navigation in pygame."""
 import importlib
+import threading
 
 import pygame
 
 import spinbot.visuals as v
 from spinbot.firebot import FirebotAPI
 from spinbot.streamerbot import StreamerbotAPI
+from spinbot.twitch_auth import start_device_flow, poll_for_token, validate_token, refresh_token
+from spinbot.twitch import TwitchAPI, TwitchChat
 from spinbot.config import load_config, save_config
+
+TWITCH_CLIENT_ID = "REMOVED"
+TWITCH_CLIENT_SECRET = "REMOVED"
 
 SPINNERS = [
     ("wheel", "Wheel", "spinbot.wheel", "run_wheel"),
@@ -173,7 +179,8 @@ def run_app():
     state = "main"  # main, config_bot, config_mode, config_currency, config_bonus,
                      # config_bonus_weight, config_meta_key, config_sb_variable,
                      # config_sb_bonus, config_sb_bonus_weight,
-                     # spinner_select, odds_select, theme_select
+                     # spinner_select, odds_select, theme_select,
+                     # twitch_auth, raffle_setup, raffle_active, raffle_spinner
     selected_spinner = None
     status_message = ""
     status_timer = 0
@@ -184,6 +191,15 @@ def run_app():
     input_text = ""
     input_label = ""
     input_callback = None
+
+    # For Twitch raffle
+    twitch_chat = None
+    twitch_api = None
+    twitch_auth_code = None
+    twitch_auth_device = None
+    twitch_auth_thread = None
+    twitch_auth_result = None
+    raffle_filter = "anyone"  # anyone, followers, subscribers, both
 
     running = True
     while running:
@@ -230,6 +246,26 @@ def run_app():
                         state = "theme_select"
                     elif btn.tag == "quit":
                         running = False
+                    elif btn.tag == "raffle":
+                        # Check if we have a valid Twitch token
+                        token = config.get("twitch_access_token") if config else None
+                        if token and validate_token(token):
+                            state = "raffle_setup"
+                        elif token and config.get("twitch_refresh_token"):
+                            # Try refreshing
+                            new_tokens = refresh_token(
+                                TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET,
+                                config["twitch_refresh_token"])
+                            if new_tokens:
+                                config["twitch_access_token"] = new_tokens["access_token"]
+                                if new_tokens.get("refresh_token"):
+                                    config["twitch_refresh_token"] = new_tokens["refresh_token"]
+                                save_config(config)
+                                state = "raffle_setup"
+                            else:
+                                state = "twitch_auth"
+                        else:
+                            state = "twitch_auth"
                     elif btn.tag and btn.tag.startswith("spinner_"):
                         idx = int(btn.tag.split("_")[1])
                         if config and (config.get("mode") or config.get("sb_variable_name")):
@@ -577,6 +613,254 @@ def run_app():
                     elif event.unicode and event.unicode.isdigit() and len(input_text) < 5:
                         input_text += event.unicode
 
+        elif state == "twitch_auth":
+            _draw_page_title(screen, fonts, "Connect Twitch Account")
+            if twitch_auth_thread is None:
+                # Start the device flow
+                try:
+                    flow = start_device_flow(TWITCH_CLIENT_ID)
+                    twitch_auth_code = flow["user_code"]
+                    twitch_auth_device = flow["device_code"]
+                    interval = flow.get("interval", 5)
+                    expires = flow.get("expires_in", 300)
+                    import webbrowser
+                    webbrowser.open(flow["verification_uri"])
+                    twitch_auth_result = None
+
+                    def _poll():
+                        nonlocal twitch_auth_result
+                        twitch_auth_result = poll_for_token(
+                            TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET,
+                            twitch_auth_device, interval, expires)
+
+                    twitch_auth_thread = threading.Thread(target=_poll, daemon=True)
+                    twitch_auth_thread.start()
+                except Exception:
+                    status_message = "Failed to start Twitch auth"
+                    status_timer = 3.0
+                    twitch_auth_thread = None
+                    state = "main"
+
+            if twitch_auth_thread is not None:
+                # Show the code
+                msg1 = fonts["medium"].render("A browser window has opened.", True, v.TEXT_COLOR)
+                screen.blit(msg1, msg1.get_rect(center=(v.WIDTH // 2, 150)))
+                msg2 = fonts["medium"].render("Enter this code on Twitch:", True, v.TEXT_COLOR)
+                screen.blit(msg2, msg2.get_rect(center=(v.WIDTH // 2, 200)))
+                code_text = fonts["large"].render(twitch_auth_code or "...", True, v.ACCENT_COLOR)
+                screen.blit(code_text, code_text.get_rect(center=(v.WIDTH // 2, 260)))
+                hint = fonts["hint"].render("Waiting for authorization...", True, v.DIM_TEXT)
+                screen.blit(hint, hint.get_rect(center=(v.WIDTH // 2, 320)))
+
+                back_btn = Button((v.WIDTH // 2 - 60, 400, 120, 40), "Cancel", fonts["medium"])
+                back_btn.check_hover(mouse_pos)
+                back_btn.draw(screen)
+                if clicked and back_btn.check_click(clicked):
+                    twitch_auth_thread = None
+                    state = "main"
+
+                # Check if auth completed
+                if not twitch_auth_thread.is_alive():
+                    if twitch_auth_result:
+                        token = twitch_auth_result["access_token"]
+                        user_info = validate_token(token)
+                        if config is None:
+                            config = {}
+                        config["twitch_access_token"] = token
+                        config["twitch_refresh_token"] = twitch_auth_result.get("refresh_token")
+                        config["twitch_login"] = user_info.get("login", "") if user_info else ""
+                        config["twitch_user_id"] = user_info.get("user_id", "") if user_info else ""
+                        if not config.get("streamer_name"):
+                            config["streamer_name"] = config["twitch_login"]
+                        save_config(config)
+                        status_message = f"Connected as {config['twitch_login']}!"
+                        status_timer = 2.0
+                        state = "raffle_setup"
+                    else:
+                        status_message = "Authorization failed or timed out"
+                        status_timer = 3.0
+                        state = "main"
+                    twitch_auth_thread = None
+
+        elif state == "raffle_setup":
+            _draw_page_title(screen, fonts, "Raffle Setup")
+            login = config.get("twitch_login", "?") if config else "?"
+            info = fonts["hint"].render(f"Connected as: {login}", True, v.DIM_TEXT)
+            screen.blit(info, info.get_rect(center=(v.WIDTH // 2, 80)))
+
+            label = fonts["medium"].render("Who can enter?", True, v.TEXT_COLOR)
+            screen.blit(label, label.get_rect(center=(v.WIDTH // 2, 140)))
+
+            filter_options = [
+                ("Anyone", "anyone"),
+                ("Followers Only", "followers"),
+                ("Subscribers Only", "subscribers"),
+                ("Followers + Subscribers", "both"),
+            ]
+            btn_w, btn_h = 300, 45
+            cx = v.WIDTH // 2
+            y = 180
+            for filter_label, filter_tag in filter_options:
+                active = raffle_filter == filter_tag
+                color = v.ACCENT_COLOR if active else v.PANEL_BG
+                text_color = v.BG_COLOR if active else v.TEXT_COLOR
+                btn = Button((cx - btn_w // 2, y, btn_w, btn_h), filter_label,
+                             fonts["medium"], color=color, text_color=text_color, tag=filter_tag)
+                btn.check_hover(mouse_pos)
+                btn.draw(screen)
+                if clicked and btn.check_click(clicked):
+                    raffle_filter = filter_tag
+                y += 55
+
+            start_btn = Button((cx - btn_w // 2, y + 20, btn_w, btn_h), "Open Raffle",
+                               fonts["medium"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR,
+                               tag="start")
+            start_btn.check_hover(mouse_pos)
+            start_btn.draw(screen)
+            back_btn = Button((cx - btn_w // 2, y + 80, btn_w, btn_h), "Back",
+                              fonts["medium"], tag="back")
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+
+            if clicked:
+                if start_btn.check_click(clicked):
+                    # Start listening for !enter
+                    token = config.get("twitch_access_token", "")
+                    login = config.get("twitch_login", "")
+                    twitch_chat = TwitchChat(token, login, login)
+                    twitch_chat.start()
+                    twitch_api = TwitchAPI(
+                        TWITCH_CLIENT_ID, token,
+                        config.get("twitch_user_id", ""))
+                    state = "raffle_active"
+                elif back_btn.check_click(clicked):
+                    state = "main"
+
+        elif state == "raffle_active":
+            _draw_page_title(screen, fonts, "Raffle Open — !enter in chat")
+            count = twitch_chat.entry_count if twitch_chat else 0
+            count_text = fonts["large"].render(str(count), True, v.ACCENT_COLOR)
+            screen.blit(count_text, count_text.get_rect(center=(v.WIDTH // 2, 160)))
+            count_label = fonts["medium"].render("entries", True, v.DIM_TEXT)
+            screen.blit(count_label, count_label.get_rect(center=(v.WIDTH // 2, 210)))
+
+            filter_labels = {
+                "anyone": "Anyone can enter",
+                "followers": "Followers only",
+                "subscribers": "Subscribers only",
+                "both": "Followers + Subscribers only",
+            }
+            filter_text = fonts["hint"].render(filter_labels.get(raffle_filter, ""), True, v.DIM_TEXT)
+            screen.blit(filter_text, filter_text.get_rect(center=(v.WIDTH // 2, 260)))
+
+            btn_w, btn_h = 300, 50
+            cx = v.WIDTH // 2
+            close_btn = Button((cx - btn_w // 2, 320, btn_w, btn_h), "Close Entries & Spin",
+                               fonts["medium"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR,
+                               tag="close")
+            close_btn.check_hover(mouse_pos)
+            close_btn.draw(screen)
+            cancel_btn = Button((cx - btn_w // 2, 390, btn_w, btn_h), "Cancel Raffle",
+                                fonts["medium"], tag="cancel")
+            cancel_btn.check_hover(mouse_pos)
+            cancel_btn.draw(screen)
+
+            if clicked:
+                if close_btn.check_click(clicked) and count > 0:
+                    if twitch_chat:
+                        twitch_chat.stop()
+                    state = "raffle_spinner"
+                elif cancel_btn.check_click(clicked):
+                    if twitch_chat:
+                        twitch_chat.stop()
+                        twitch_chat.clear_entries()
+                    state = "main"
+
+        elif state == "raffle_spinner":
+            _draw_page_title(screen, fonts, "Pick a Spinner")
+            count = twitch_chat.entry_count if twitch_chat else 0
+            info = fonts["hint"].render(f"{count} entries collected", True, v.DIM_TEXT)
+            screen.blit(info, info.get_rect(center=(v.WIDTH // 2, 80)))
+
+            btn_w, btn_h = 180, 45
+            gap = 10
+            cols = 2
+            start_x = (v.WIDTH - (cols * btn_w + (cols - 1) * gap)) // 2
+            start_y = 120
+            for i, (key, label, _, _) in enumerate(SPINNERS):
+                col = i % cols
+                row = i // cols
+                x = start_x + col * (btn_w + gap)
+                y = start_y + row * (btn_h + gap)
+                btn = Button((x, y, btn_w, btn_h), label, fonts["small"], tag=f"raffle_spin_{i}")
+                btn.check_hover(mouse_pos)
+                btn.draw(screen)
+                if clicked and btn.check_click(clicked):
+                    raffle_spin_idx = i
+                    break
+            else:
+                raffle_spin_idx = None
+
+            if raffle_spin_idx is not None:
+                selected_spinner = raffle_spin_idx
+                # Build entries from raffle, apply filters
+                raw_entries = twitch_chat.get_entries() if twitch_chat else {}
+                streamer_id = config.get("twitch_user_id", "") if config else ""
+                entries = []
+                for user_id, display_name in raw_entries.items():
+                    if user_id == streamer_id:
+                        continue
+                    if raffle_filter in ("followers", "both"):
+                        if twitch_api and not twitch_api.is_follower(user_id):
+                            continue
+                    if raffle_filter in ("subscribers", "both"):
+                        if twitch_api and not twitch_api.is_subscriber(user_id):
+                            continue
+                    entries.append((display_name, 1))
+                if not entries:
+                    status_message = "No eligible entries after filtering!"
+                    status_timer = 2.0
+                else:
+                    # Run the spinner
+                    _, _, module_name, func_name = SPINNERS[selected_spinner]
+
+                    def on_winner(name):
+                        try:
+                            if twitch_chat:
+                                twitch_chat.send_message(
+                                    f"Congratulations @{name}, you won the giveaway!")
+                        except Exception:
+                            pass
+
+                    pygame.display.quit()
+                    module = importlib.import_module(module_name)
+                    run_fn = getattr(module, func_name)
+                    _winner, action = run_fn(entries, on_winner=on_winner, show_weights=False)
+                    if twitch_chat:
+                        twitch_chat.clear_entries()
+                    if action == "quit":
+                        running = False
+                    else:
+                        screen = pygame.display.set_mode((v.WIDTH, v.HEIGHT))
+                        pygame.display.set_caption("Spinbot")
+                        fonts = v.get_fonts()
+                        state = "main"
+
+            # Back button below spinners
+            back_y = start_y + (len(SPINNERS) // cols) * (btn_h + gap) + 20
+            back_btn = Button((v.WIDTH // 2 - 90, back_y, 180, btn_h), "Back",
+                              fonts["small"], tag="back")
+            back_btn.check_hover(mouse_pos)
+            back_btn.draw(screen)
+            if clicked and back_btn.check_click(clicked):
+                # Re-open the raffle
+                if twitch_chat:
+                    token = config.get("twitch_access_token", "")
+                    login = config.get("twitch_login", "")
+                    twitch_chat = TwitchChat(token, login, login)
+                    twitch_chat.start()
+                state = "raffle_active"
+
         elif state == "odds_select":
             _draw_page_title(screen, fonts, f"Odds Mode - {SPINNERS[selected_spinner][1]}")
             buttons = _get_odds_buttons(fonts)
@@ -624,6 +908,8 @@ def run_app():
         if running:
             pygame.display.flip()
 
+    if twitch_chat:
+        twitch_chat.stop()
     pygame.quit()
 
 
@@ -709,8 +995,14 @@ def _get_main_buttons(fonts, config):
         y = start_y + row * (btn_h + gap)
         buttons.append(Button((x, y, btn_w, btn_h), label, fonts["small"], tag=f"spinner_{i}"))
 
+    # Raffle button (full width, accent color)
+    raffle_y = start_y + (len(SPINNERS) // cols) * (btn_h + gap) + 10
+    raffle_w = btn_w * cols + gap
+    buttons.append(Button((start_x, raffle_y, raffle_w, btn_h), "Start Raffle (!enter)",
+                          fonts["small"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR, tag="raffle"))
+
     # Bottom buttons
-    bottom_y = start_y + (len(SPINNERS) // cols + 1) * (btn_h + gap) + 20
+    bottom_y = raffle_y + btn_h + 20
     settings_w = 250
     settings_gap = 15
     total_settings_w = settings_w * 3 + settings_gap * 2
