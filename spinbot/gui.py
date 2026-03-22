@@ -200,6 +200,9 @@ def run_app():
     twitch_auth_thread = None
     twitch_auth_result = None
     raffle_filter = "anyone"  # anyone, followers, subscribers, both
+    raffle_duration = 90  # seconds
+    raffle_timer = 0.0
+    raffle_announced = False
 
     running = True
     while running:
@@ -689,7 +692,7 @@ def run_app():
             screen.blit(info, info.get_rect(center=(v.WIDTH // 2, 80)))
 
             label = fonts["medium"].render("Who can enter?", True, v.TEXT_COLOR)
-            screen.blit(label, label.get_rect(center=(v.WIDTH // 2, 140)))
+            screen.blit(label, label.get_rect(center=(v.WIDTH // 2, 120)))
 
             filter_options = [
                 ("Anyone", "anyone"),
@@ -697,9 +700,9 @@ def run_app():
                 ("Subscribers Only", "subscribers"),
                 ("Followers + Subscribers", "both"),
             ]
-            btn_w, btn_h = 300, 45
+            btn_w, btn_h = 300, 40
             cx = v.WIDTH // 2
-            y = 180
+            y = 155
             for filter_label, filter_tag in filter_options:
                 active = raffle_filter == filter_tag
                 color = v.ACCENT_COLOR if active else v.PANEL_BG
@@ -710,14 +713,37 @@ def run_app():
                 btn.draw(screen)
                 if clicked and btn.check_click(clicked):
                     raffle_filter = filter_tag
-                y += 55
+                y += 48
 
-            start_btn = Button((cx - btn_w // 2, y + 20, btn_w, btn_h), "Open Raffle",
+            # Timer duration
+            y += 10
+            timer_label = fonts["medium"].render("Timer (seconds):", True, v.TEXT_COLOR)
+            screen.blit(timer_label, timer_label.get_rect(center=(v.WIDTH // 2, y)))
+            y += 30
+            timer_presets = [30, 60, 90, 120, 180]
+            preset_w = 55
+            preset_gap = 8
+            total_w = len(timer_presets) * preset_w + (len(timer_presets) - 1) * preset_gap
+            px = cx - total_w // 2
+            for secs in timer_presets:
+                active = raffle_duration == secs
+                color = v.ACCENT_COLOR if active else v.PANEL_BG
+                text_color = v.BG_COLOR if active else v.TEXT_COLOR
+                tbtn = Button((px, y, preset_w, 36), f"{secs}s",
+                              fonts["small"], color=color, text_color=text_color, tag=f"timer_{secs}")
+                tbtn.check_hover(mouse_pos)
+                tbtn.draw(screen)
+                if clicked and tbtn.check_click(clicked):
+                    raffle_duration = secs
+                px += preset_w + preset_gap
+            y += 50
+
+            start_btn = Button((cx - btn_w // 2, y, btn_w, btn_h), "Open Raffle",
                                fonts["medium"], color=v.ACCENT_COLOR, text_color=v.BG_COLOR,
                                tag="start")
             start_btn.check_hover(mouse_pos)
             start_btn.draw(screen)
-            back_btn = Button((cx - btn_w // 2, y + 80, btn_w, btn_h), "Back",
+            back_btn = Button((cx - btn_w // 2, y + 50, btn_w, btn_h), "Back",
                               fonts["medium"], tag="back")
             back_btn.check_hover(mouse_pos)
             back_btn.draw(screen)
@@ -732,17 +758,41 @@ def run_app():
                     twitch_api = TwitchAPI(
                         TWITCH_CLIENT_ID, token,
                         config.get("twitch_user_id", ""))
+                    raffle_timer = raffle_duration
+                    raffle_announced = False
                     state = "raffle_active"
                 elif back_btn.check_click(clicked):
                     state = "main"
 
         elif state == "raffle_active":
+            # Send announcement once IRC is fully connected
+            if not raffle_announced and twitch_chat and twitch_chat._connected:
+                try:
+                    twitch_chat.send_message(
+                        f"Type !enter to join the giveaway! You have {raffle_duration} seconds!")
+                    raffle_announced = True
+                    raffle_timer = raffle_duration  # Start timer NOW, after connection is ready
+                except Exception:
+                    pass
+
+            # Only tick down once announced (connected)
+            if raffle_announced:
+                raffle_timer = max(0, raffle_timer - dt)
+            time_left = int(raffle_timer) + 1 if raffle_timer > 0 else 0
+
             _draw_page_title(screen, fonts, "Raffle Open — !enter in chat")
+
+            # Countdown
+            mins, secs = divmod(time_left, 60)
+            timer_color = v.ACCENT_COLOR if time_left > 10 else (220, 60, 60)
+            timer_text = fonts["large"].render(f"{mins}:{secs:02d}", True, timer_color)
+            screen.blit(timer_text, timer_text.get_rect(center=(v.WIDTH // 2, 130)))
+
             count = twitch_chat.entry_count if twitch_chat else 0
             count_text = fonts["large"].render(str(count), True, v.ACCENT_COLOR)
-            screen.blit(count_text, count_text.get_rect(center=(v.WIDTH // 2, 160)))
+            screen.blit(count_text, count_text.get_rect(center=(v.WIDTH // 2, 190)))
             count_label = fonts["medium"].render("entries", True, v.DIM_TEXT)
-            screen.blit(count_label, count_label.get_rect(center=(v.WIDTH // 2, 210)))
+            screen.blit(count_label, count_label.get_rect(center=(v.WIDTH // 2, 230)))
 
             filter_labels = {
                 "anyone": "Anyone can enter",
@@ -751,7 +801,7 @@ def run_app():
                 "both": "Followers + Subscribers only",
             }
             filter_text = fonts["hint"].render(filter_labels.get(raffle_filter, ""), True, v.DIM_TEXT)
-            screen.blit(filter_text, filter_text.get_rect(center=(v.WIDTH // 2, 260)))
+            screen.blit(filter_text, filter_text.get_rect(center=(v.WIDTH // 2, 270)))
 
             btn_w, btn_h = 300, 50
             cx = v.WIDTH // 2
@@ -765,16 +815,34 @@ def run_app():
             cancel_btn.check_hover(mouse_pos)
             cancel_btn.draw(screen)
 
-            if clicked:
+            # Auto-close when timer expires
+            auto_closed = raffle_timer <= 0 and count > 0
+
+            if auto_closed:
+                try:
+                    twitch_chat.send_message("Entries are closed! Spinning the wheel...")
+                except Exception:
+                    pass
+                state = "raffle_spinner"
+            elif clicked:
                 if close_btn.check_click(clicked) and count > 0:
-                    if twitch_chat:
-                        twitch_chat.stop()
+                    try:
+                        twitch_chat.send_message("Entries are closed! Spinning the wheel...")
+                    except Exception:
+                        pass
                     state = "raffle_spinner"
                 elif cancel_btn.check_click(clicked):
                     if twitch_chat:
                         twitch_chat.stop()
                         twitch_chat.clear_entries()
                     state = "main"
+            elif raffle_timer <= 0 and count == 0:
+                status_message = "Time's up with no entries!"
+                status_timer = 2.0
+                if twitch_chat:
+                    twitch_chat.stop()
+                    twitch_chat.clear_entries()
+                state = "main"
 
         elif state == "raffle_spinner":
             _draw_page_title(screen, fonts, "Pick a Spinner")
@@ -838,6 +906,7 @@ def run_app():
                     _winner, action = run_fn(entries, on_winner=on_winner, show_weights=False)
                     if twitch_chat:
                         twitch_chat.clear_entries()
+                        twitch_chat.stop()
                     if action == "quit":
                         running = False
                     else:
@@ -845,6 +914,7 @@ def run_app():
                         pygame.display.set_caption("Spinbot")
                         fonts = v.get_fonts()
                         state = "main"
+                    continue  # Skip drawing on this frame after display reset
 
             # Back button below spinners
             back_y = start_y + (len(SPINNERS) // cols) * (btn_h + gap) + 20
@@ -853,12 +923,13 @@ def run_app():
             back_btn.check_hover(mouse_pos)
             back_btn.draw(screen)
             if clicked and back_btn.check_click(clicked):
-                # Re-open the raffle
+                # Stop old connection and re-open the raffle
                 if twitch_chat:
-                    token = config.get("twitch_access_token", "")
-                    login = config.get("twitch_login", "")
-                    twitch_chat = TwitchChat(token, login, login)
-                    twitch_chat.start()
+                    twitch_chat.stop()
+                token = config.get("twitch_access_token", "")
+                login = config.get("twitch_login", "")
+                twitch_chat = TwitchChat(token, login, login)
+                twitch_chat.start()
                 state = "raffle_active"
 
         elif state == "odds_select":

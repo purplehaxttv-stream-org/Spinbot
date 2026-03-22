@@ -92,6 +92,7 @@ class TwitchChat:
         self.channel = f"#{channel.lower()}"
         self._sock = None
         self._running = False
+        self._connected = False
         self._thread = None
         self._entries = {}  # user_id -> display_name
         self._lock = threading.Lock()
@@ -135,11 +136,11 @@ class TwitchChat:
             self._sock.settimeout(5)
             self._sock.connect((self.IRC_HOST, self.IRC_PORT))
 
+            # Request tags before JOIN so user-id/display-name are available immediately
+            self._send("CAP REQ :twitch.tv/tags")
             self._send(f"PASS oauth:{self.access_token}")
             self._send(f"NICK {self.nick}")
             self._send(f"JOIN {self.channel}")
-            # Request tags so we get user-id and display-name
-            self._send("CAP REQ :twitch.tv/tags")
 
             buffer = ""
             while self._running:
@@ -167,6 +168,11 @@ class TwitchChat:
             self._send(f"PONG{line[4:]}")
             return
 
+        # Mark connected after CAP ACK (tags are now active)
+        if "CAP * ACK" in line:
+            self._connected = True
+            return
+
         # Parse PRIVMSG with tags
         if "PRIVMSG" not in line:
             return
@@ -186,18 +192,23 @@ class TwitchChat:
             return
         message = parts[3].lstrip(":").strip().lower()
 
-        if message == "!enter":
+        if message.split()[0] == "!enter" if message.split() else False:
             user_id = tags.get("user-id", "")
             display_name = tags.get("display-name", "")
-            if not display_name:
-                # Fall back to parsing nick from prefix
-                prefix = parts[0]
-                if "!" in prefix:
-                    display_name = prefix.split("!")[0].lstrip(":")
+            # Fall back to parsing nick from prefix
+            prefix = parts[0]
+            if "!" in prefix:
+                nick = prefix.split("!")[0].lstrip(":")
+                if not display_name:
+                    display_name = nick
+                if not user_id:
+                    user_id = nick  # Use login as ID fallback
 
             if user_id and display_name:
                 with self._lock:
-                    if user_id not in self._entries:
+                    # Check both user_id and display_name to prevent duplicates
+                    # (first !enter may use nick as ID, second may use numeric ID)
+                    if user_id not in self._entries and display_name not in self._entries.values():
                         self._entries[user_id] = display_name
                         if self._on_entry:
                             self._on_entry(user_id, display_name)
